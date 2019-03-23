@@ -3,6 +3,7 @@ const admin = require('firebase-admin');
 admin.initializeApp();
 
 const firestore = admin.firestore();
+firestore.settings({timestampsInSnapshots: true});
 
 exports.sendChatNotification = functions
   .region('asia-northeast1')
@@ -15,27 +16,27 @@ exports.sendChatNotification = functions
 
       console.log('New message from:', senderId, 'for user:', receiverId);
 
-      // Get the device notification token.
-      const getDeviceTokenPromise = firestore.doc(`users/${receiverId}`).get();
+      // Get the list of device notification tokens.
+      const getDeviceTokensPromise = firestore.doc(`users/${receiverId}`).get();
 
       // Get the sender profile.
       const getSenderProfilePromise = admin.auth().getUser(senderId);
 
-      // The snapshot to the user's token.
-      let tokenSnapshot;
+      // The snapshot to the user's tokens.
+      let tokensSnapshot;
 
-      // User's token.
-      let token;
+      // The array containing all the user's tokens.
+      let tokens;
 
-      const results = await Promise.all([getDeviceTokenPromise, getSenderProfilePromise]);
-      tokenSnapshot = results[0];
+      const results = await Promise.all([getDeviceTokensPromise, getSenderProfilePromise]);
+      tokensSnapshot = results[0];
       const sender = results[1];
 
+      tokens = tokensSnapshot.get('pushTokens');
       // Check if there are any device tokens.
-      if (!tokenSnapshot.exists) {
-        return console.log('There is no notification token to send to.');
+      if (!tokensSnapshot.exists || !tokens.length) {
+        return console.log('There are no notification tokens to send to.');
       }
-      console.log('Fetched sender profile', sender);
 
       // Notification details.
       const payload = {
@@ -47,18 +48,23 @@ exports.sendChatNotification = functions
         }
       };
 
-      // Listing all tokens as an array.
-      token = tokenSnapshot.get('pushToken');
       // Send notifications to all tokens.
-      const response = await admin.messaging().sendToDevice(token, payload);
+      const response = await admin.messaging().sendToDevice(tokens, payload);
+      // For each message check if there was an error.
+      const tokensToRemove = [];
       response.results.forEach((result, index) => {
         const error = result.error;
         if (error) {
-          console.error('Failure sending notification to', token, error);
+          console.error('Failure sending notification to', tokens[index], error);
+          // Cleanup the tokens who are not registered anymore.
+          if (error.code === 'messaging/invalid-registration-token' ||
+              error.code === 'messaging/registration-token-not-registered') {
+            tokensToRemove.push(tokensSnapshot.ref.update(firestore.FieldValue.arrayRemove(tokens[index])));
+          }
         } else {
           console.log('Notification sended.');
         }
       });
 
-      return response.successCount > 0;
+      return Promise.all(tokensToRemove);
     });
