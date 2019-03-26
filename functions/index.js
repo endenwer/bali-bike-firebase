@@ -42,6 +42,7 @@ exports.sendChatNotification = functions
       const payload = {
         data: {chatId: context.params.chatId, type: 'NEW_MESSAGE'},
         notification: {
+          sound: "default",
           title: sender.displayName,
           body: message.text,
           icon: sender.photoURL
